@@ -54,7 +54,11 @@ const EOL = '\n';
 // Progress display constants
 const PROGRESS_THRESHOLD_MS = 2000; // Show progress after 2 seconds
 // In assistant mode, blocking bash auto-backgrounds after this many ms in the main agent
-const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
+const ASSISTANT_BLOCKING_BUDGET_MS =
+  Number.parseInt(
+    process.env.CLAUDE_CODE_ASSISTANT_BLOCKING_BUDGET_MS ?? '',
+    10,
+  ) || 15_000;
 
 // Search commands for collapsible display (grep, find, etc.)
 const BASH_SEARCH_COMMANDS = new Set(['find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis']);
@@ -217,8 +221,13 @@ function isSilentBashCommand(command: string): boolean {
 }
 
 // Commands that should not be auto-backgrounded
-const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep' // Sleep should run in foreground unless explicitly backgrounded by user
-];
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = isEnvTruthy(
+  process.env.CLAUDE_CODE_ROOT_AUTO,
+)
+  ? []
+  : [
+      'sleep', // Sleep should run in foreground unless explicitly backgrounded by user
+    ];
 
 // Check if background tasks are disabled at module load time
 const isBackgroundTasksDisabled =

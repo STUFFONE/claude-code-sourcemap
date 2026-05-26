@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLI="${CLAUDE_CODE_ROOT_AUTO_CLI:-/root/claude-code-sourcemap/package/cli.js}"
+
+case "${1:-}" in
+  update|upgrade|install)
+    echo "claude-code root-auto build: official self-update/install is disabled. Update /root/claude-code-sourcemap and reinstall this wrapper instead."
+    exit 0
+    ;;
+esac
+
+export CLAUDE_CODE_ROOT_AUTO="${CLAUDE_CODE_ROOT_AUTO:-1}"
+export CLAUDE_CODE_CONTEXT_WINDOW="${CLAUDE_CODE_CONTEXT_WINDOW:-1000000}"
+export BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS:-10800000}"
+export BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS:-21600000}"
+export CLAUDE_CODE_ASSISTANT_BLOCKING_BUDGET_MS="${CLAUDE_CODE_ASSISTANT_BLOCKING_BUDGET_MS:-15000}"
+export CLAUDE_CODE_COMPANY_MODE="${CLAUDE_CODE_COMPANY_MODE:-dynamic}"
+export CLAUDE_CODE_COMPANY_MAX_AGENTS="${CLAUDE_CODE_COMPANY_MAX_AGENTS:-6}"
+export CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS="${CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS:-3}"
+export IS_SANDBOX="${IS_SANDBOX:-1}"
+export CLAUDE_CODE_BUBBLEWRAP="${CLAUDE_CODE_BUBBLEWRAP:-1}"
+export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"
+export CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL="${CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL:-1}"
+
+super_agent="${CLAUDE_CODE_SUPER_AGENT:-0}"
+args=()
+has_permission_flag=0
+
+while (($#)); do
+  case "$1" in
+    --super|--company-mode|--ceo)
+      super_agent=1
+      ;;
+    --no-super)
+      super_agent=0
+      ;;
+    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--permission-mode|--permission-mode=*)
+      has_permission_flag=1
+      args+=("$1")
+      ;;
+    *)
+      args+=("$1")
+      ;;
+  esac
+  shift
+done
+
+final_args=()
+if [[ "$has_permission_flag" == "0" ]]; then
+  final_args+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+fi
+
+if [[ "$super_agent" == "1" ]]; then
+  final_args+=(--append-system-prompt "$(cat <<'PROMPT'
+You are running in Claude Code root-auto CEO Company Mode.
+
+Operating model:
+- Treat the main conversation as the CEO/lead operator. Build a temporary company around the user's objective: PM, architect, implementer, reviewer, QA, ops/security, research, data, or domain specialists as needed.
+- Use Task/subagents aggressively for parallel discovery, implementation, review, and verification when the work has separable threads. Keep concurrency useful, not theatrical. Default max concurrent agents is 6 unless CLAUDE_CODE_COMPANY_MAX_AGENTS says otherwise.
+- Maintain a live task board with TodoWrite for multi-step work. Keep the main thread responsible for integration, final judgment, and user-facing decisions.
+- Run local commands and edits without asking for confirmation. This environment is configured for root-auto operation.
+- For long work, keep moving until the objective is genuinely handled: inspect, implement, verify, fix failures, and summarize.
+
+Execution rules:
+- Prefer repo-local conventions and tests over invented process.
+- Verify important changes with tests, static checks, or targeted runtime commands.
+- Do not print secrets or auth tokens. Redact secret-like values in status reports.
+- Do not commit, push, create releases, rotate production secrets, or perform remote account operations unless the user explicitly requests that exact operation.
+- Avoid destructive actions outside the active project unless the user explicitly scopes them.
+- When blocked, diagnose and try reasonable alternatives before asking the user.
+
+Output style:
+- Be concise and operational. Surface decisions, risks, verification, and next actions.
+PROMPT
+)")
+fi
+
+exec node "$CLI" "${final_args[@]}" "${args[@]}"

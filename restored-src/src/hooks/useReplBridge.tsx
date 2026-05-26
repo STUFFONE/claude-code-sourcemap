@@ -18,6 +18,7 @@ import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState
 import type { Message } from '../types/message.js';
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
+import { isEnvTruthy } from '../utils/envUtils.js';
 import { errorMessage } from '../utils/errors.js';
 import { enqueue } from '../utils/messageQueueManager.js';
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
@@ -424,7 +425,10 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
               // These mirror print.ts handleSetPermissionMode; the bridge
               // can't import the checks directly (bootstrap-isolation), so
               // it relies on this verdict to emit the error response.
-              if (mode === 'bypassPermissions') {
+              if (
+                mode === 'bypassPermissions' &&
+                !isEnvTruthy(process.env.CLAUDE_CODE_ROOT_AUTO)
+              ) {
                 if (isBypassPermissionsModeDisabled()) {
                   return {
                     ok: false,

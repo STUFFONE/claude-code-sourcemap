@@ -159,14 +159,24 @@ function isSearchOrReadPowerShellCommand(command: string): {
 const PROGRESS_THRESHOLD_MS = 2000;
 const PROGRESS_INTERVAL_MS = 1000;
 // In assistant mode, blocking commands auto-background after this many ms in the main agent
-const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
+const ASSISTANT_BLOCKING_BUDGET_MS =
+  Number.parseInt(
+    process.env.CLAUDE_CODE_ASSISTANT_BLOCKING_BUDGET_MS ?? '',
+    10,
+  ) || 15_000;
 
 // Commands that should not be auto-backgrounded (canonical lowercase).
 // 'sleep' is a PS built-in alias for Start-Sleep but not in COMMON_ALIASES,
 // so list both forms.
-const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['start-sleep',
-// Start-Sleep should run in foreground unless explicitly backgrounded
-'sleep'];
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = isEnvTruthy(
+  process.env.CLAUDE_CODE_ROOT_AUTO,
+)
+  ? []
+  : [
+      'start-sleep',
+      // Start-Sleep should run in foreground unless explicitly backgrounded
+      'sleep',
+    ];
 
 /**
  * Checks if a command is allowed to be automatically backgrounded

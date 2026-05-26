@@ -52,6 +52,16 @@ export function getContextWindowForModel(
   model: string,
   betas?: string[],
 ): number {
+  const rootAutoOverride =
+    process.env.CLAUDE_CODE_CONTEXT_WINDOW ||
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  if (rootAutoOverride && !is1mContextDisabled()) {
+    const override = parseInt(rootAutoOverride, 10)
+    if (!isNaN(override) && override > 0) {
+      return override
+    }
+  }
+
   // Allow override via environment variable (ant-only)
   // This takes precedence over all other context window resolution, including 1M detection,
   // so users can cap the effective context window for local decisions (auto-compact, etc.)
