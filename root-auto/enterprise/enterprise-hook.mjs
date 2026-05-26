@@ -12,6 +12,10 @@ function isTruthy(value) {
   return !/^(0|false|off|no)$/i.test(String(value))
 }
 
+function envMode(name, fallback) {
+  return String(process.env[name] || fallback).toLowerCase()
+}
+
 function enterpriseEnabled() {
   return isTruthy(process.env.CLAUDE_CODE_ENTERPRISE ?? '1')
 }
@@ -449,10 +453,17 @@ function stopGate(input) {
   const current = state.current
   const violations = []
   const changedCount = current.changedFiles.length
+  const todoGateMode = envMode('CLAUDE_CODE_TODO_GATE', 'complex')
+  const todoRequired =
+    todoGateMode === 'strict'
+      ? current.execution || current.complex
+      : todoGateMode === 'off'
+        ? false
+        : current.complex || changedCount >= 2 || current.editCount >= 3
 
   if (current.mode !== 'discussion') {
-    if ((current.execution || current.complex) && !current.todoUsed) {
-      violations.push('Create or update a TodoWrite task board before finalizing this execution task.')
+    if (todoRequired && !current.todoUsed) {
+      violations.push('Create or update a TodoWrite task board before finalizing this complex or multi-file task.')
     }
     if (current.editCount > 0 && !current.diffViewed) {
       violations.push('Inspect the resulting diff/status before finalizing code changes.')

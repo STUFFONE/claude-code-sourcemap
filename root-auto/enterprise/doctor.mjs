@@ -61,6 +61,7 @@ function main() {
     CLAUDE_CODE_REMOTE_OPS: 'explicit',
     CLAUDE_CODE_COMPANY_MAX_AGENTS: '6',
     CLAUDE_CODE_GATE_MAX_RETRIES: '3',
+    CLAUDE_CODE_TODO_GATE: 'complex',
   }
   for (const name of [
     'CLAUDE_CODE_ROOT_AUTO',
@@ -71,6 +72,7 @@ function main() {
     'CLAUDE_CODE_REMOTE_OPS',
     'CLAUDE_CODE_COMPANY_MAX_AGENTS',
     'CLAUDE_CODE_GATE_MAX_RETRIES',
+    'CLAUDE_CODE_TODO_GATE',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_MODEL',
     'ANTHROPIC_AUTH_TOKEN',
