@@ -1,0 +1,12 @@
+{
+  "name": "root-auto-browser",
+  "version": "2.1.88-root-auto-enterprise-deepseek.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "root-auto-browser": "./root-auto-browser.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}

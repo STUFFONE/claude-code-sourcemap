@@ -1,6 +1,6 @@
 ---
 name: company
-description: Show the current CEO Company Mode operating status, agent lanes, risks, and next moves.
+description: Show the current Enterprise CEO Company Mode operating status, agent lanes, gates, risks, and next moves.
 user-invocable: true
 argument-hint: ""
 ---
@@ -12,6 +12,8 @@ Include:
 - Active or planned specialist lanes.
 - Task board status.
 - Verification status.
+- Enterprise gate status.
+- Web/browser evidence status when relevant.
 - Key risks or blockers.
 - Next 1 to 3 actions.
 

@@ -1,16 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLI="${CLAUDE_CODE_ROOT_AUTO_CLI:-/root/claude-code-sourcemap/package/cli.js}"
+ROOT_AUTO_REPO="${CLAUDE_CODE_ROOT_AUTO_REPO:-/root/claude-code-sourcemap}"
+CLI="${CLAUDE_CODE_ROOT_AUTO_CLI:-$ROOT_AUTO_REPO/package/cli.js}"
+ROOT_AUTO_VERSION="2.1.88-root-auto-enterprise-deepseek.1"
+ENTERPRISE_HOOK_INSTALLER="$ROOT_AUTO_REPO/root-auto/enterprise/install-hooks.mjs"
+ROOT_AUTO_BROWSER="$ROOT_AUTO_REPO/root-auto/tools/browser/root-auto-browser"
+
+print_status() {
+  local mode="${CLAUDE_CODE_ENTERPRISE:-1}"
+  local root_auto="${CLAUDE_CODE_ROOT_AUTO:-1}"
+  local browser="${CLAUDE_CODE_BROWSER_BACKEND:-playwright}"
+  local web="${CLAUDE_CODE_WEB_POLICY:-hybrid}"
+  local remote="${CLAUDE_CODE_REMOTE_OPS:-explicit}"
+  cat <<STATUS
+Claude Code Root-Auto Enterprise DeepSeek
+version: $ROOT_AUTO_VERSION
+mode: $([[ "$mode" == "0" || "$mode" == "false" ]] && echo "normal" || echo "enterprise")
+root-auto: $([[ "$root_auto" == "0" || "$root_auto" == "false" ]] && echo "off" || echo "on")
+permissions: bypass local
+remote ops: $remote
+context target: ${CLAUDE_CODE_CONTEXT_WINDOW:-1000000}
+web policy: $web
+browser backend: $browser
+project memory: ${CLAUDE_CODE_PROJECT_MEMORY:-1}
+official npm package: disabled by wrapper
+install source: $ROOT_AUTO_REPO
+cli: $CLI
+STATUS
+}
 
 case "${1:-}" in
   update|upgrade|install)
     echo "claude-code root-auto build: official self-update/install is disabled. Update /root/claude-code-sourcemap and reinstall this wrapper instead."
     exit 0
     ;;
+  --status-root-auto|status-root-auto)
+    print_status
+    exit 0
+    ;;
+  --doctor-root-auto|doctor-root-auto)
+    if [[ -f "$ROOT_AUTO_REPO/root-auto/enterprise/doctor.mjs" ]]; then
+      exec node "$ROOT_AUTO_REPO/root-auto/enterprise/doctor.mjs"
+    fi
+    print_status
+    exit 0
+    ;;
+  --browser-smoke|browser-smoke)
+    exec "$ROOT_AUTO_BROWSER" smoke
+    ;;
+  --install-enterprise-hooks|install-enterprise-hooks)
+    exec node "$ENTERPRISE_HOOK_INSTALLER"
+    ;;
 esac
 
 export CLAUDE_CODE_ROOT_AUTO="${CLAUDE_CODE_ROOT_AUTO:-1}"
+export CLAUDE_CODE_ENTERPRISE="${CLAUDE_CODE_ENTERPRISE:-1}"
+export CLAUDE_CODE_ENTERPRISE_LEVEL="${CLAUDE_CODE_ENTERPRISE_LEVEL:-max}"
 export CLAUDE_CODE_CONTEXT_WINDOW="${CLAUDE_CODE_CONTEXT_WINDOW:-1000000}"
 export BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS:-10800000}"
 export BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS:-21600000}"
@@ -18,21 +64,36 @@ export CLAUDE_CODE_ASSISTANT_BLOCKING_BUDGET_MS="${CLAUDE_CODE_ASSISTANT_BLOCKIN
 export CLAUDE_CODE_COMPANY_MODE="${CLAUDE_CODE_COMPANY_MODE:-dynamic}"
 export CLAUDE_CODE_COMPANY_MAX_AGENTS="${CLAUDE_CODE_COMPANY_MAX_AGENTS:-6}"
 export CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS="${CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS:-3}"
+export CLAUDE_CODE_GATE_MAX_RETRIES="${CLAUDE_CODE_GATE_MAX_RETRIES:-3}"
+export CLAUDE_CODE_WEB_POLICY="${CLAUDE_CODE_WEB_POLICY:-hybrid}"
+export CLAUDE_CODE_BROWSER_BACKEND="${CLAUDE_CODE_BROWSER_BACKEND:-playwright}"
+export CLAUDE_CODE_BROWSER_AUTO_INSTALL="${CLAUDE_CODE_BROWSER_AUTO_INSTALL:-1}"
+export CLAUDE_CODE_REMOTE_OPS="${CLAUDE_CODE_REMOTE_OPS:-explicit}"
+export CLAUDE_CODE_PROJECT_MEMORY="${CLAUDE_CODE_PROJECT_MEMORY:-1}"
+export CLAUDE_CODE_DEEPSEEK_PROFILE="${CLAUDE_CODE_DEEPSEEK_PROFILE:-1}"
 export IS_SANDBOX="${IS_SANDBOX:-1}"
 export CLAUDE_CODE_BUBBLEWRAP="${CLAUDE_CODE_BUBBLEWRAP:-1}"
 export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"
 export CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL="${CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL:-1}"
+export PATH="$ROOT_AUTO_REPO/root-auto/tools/browser:$PATH"
 
-super_agent="${CLAUDE_CODE_SUPER_AGENT:-0}"
+super_agent="${CLAUDE_CODE_SUPER_AGENT:-1}"
 args=()
 has_permission_flag=0
 
 while (($#)); do
   case "$1" in
-    --super|--company-mode|--ceo)
+    --enterprise|--super|--company-mode|--ceo)
+      export CLAUDE_CODE_ENTERPRISE=1
       super_agent=1
       ;;
-    --no-super)
+    --normal|--no-enterprise|--no-super)
+      export CLAUDE_CODE_ENTERPRISE=0
+      super_agent=0
+      ;;
+    --no-root-auto)
+      export CLAUDE_CODE_ROOT_AUTO=0
+      export CLAUDE_CODE_ENTERPRISE=0
       super_agent=0
       ;;
     --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--permission-mode|--permission-mode=*)
@@ -46,14 +107,18 @@ while (($#)); do
   shift
 done
 
+if [[ "${CLAUDE_CODE_ENTERPRISE:-1}" != "0" && "${CLAUDE_CODE_ENTERPRISE:-1}" != "false" && -f "$ENTERPRISE_HOOK_INSTALLER" ]]; then
+  node "$ENTERPRISE_HOOK_INSTALLER" >/dev/null 2>&1 || true
+fi
+
 final_args=()
-if [[ "$has_permission_flag" == "0" ]]; then
+if [[ "$has_permission_flag" == "0" && "${CLAUDE_CODE_ROOT_AUTO:-1}" != "0" && "${CLAUDE_CODE_ROOT_AUTO:-1}" != "false" ]]; then
   final_args+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
 fi
 
-if [[ "$super_agent" == "1" ]]; then
+if [[ "$super_agent" == "1" && "${CLAUDE_CODE_ENTERPRISE:-1}" != "0" && "${CLAUDE_CODE_ENTERPRISE:-1}" != "false" ]]; then
   final_args+=(--append-system-prompt "$(cat <<'PROMPT'
-You are running in Claude Code root-auto CEO Company Mode.
+You are running in Claude Code Root-Auto Enterprise DeepSeek Mode.
 
 Operating model:
 - Treat the main conversation as the CEO/lead operator. Build a temporary company around the user's objective: PM, architect, implementer, reviewer, QA, ops/security, research, data, or domain specialists as needed.
@@ -61,12 +126,16 @@ Operating model:
 - Maintain a live task board with TodoWrite for multi-step work. Keep the main thread responsible for integration, final judgment, and user-facing decisions.
 - Run local commands and edits without asking for confirmation. This environment is configured for root-auto operation.
 - For long work, keep moving until the objective is genuinely handled: inspect, implement, verify, fix failures, and summarize.
+- Use the software enterprise hooks as hard gates. If a Stop hook returns feedback, continue the work and satisfy it instead of arguing with it.
+- For current, latest, external, legal, financial, version, API, or documentation facts, use web tools or the local Playwright browser path automatically.
+- Prefer the local browser command `root-auto-browser` when built-in WebSearch/WebFetch are unavailable under a custom Anthropic-compatible provider.
+- Use DeepSeek v4 pro as the main reasoning model when configured by ANTHROPIC_MODEL and keep subagents on CLAUDE_CODE_SUBAGENT_MODEL.
 
 Execution rules:
 - Prefer repo-local conventions and tests over invented process.
 - Verify important changes with tests, static checks, or targeted runtime commands.
 - Do not print secrets or auth tokens. Redact secret-like values in status reports.
-- Do not commit, push, create releases, rotate production secrets, or perform remote account operations unless the user explicitly requests that exact operation.
+- Do not push, create releases, rotate production secrets, publish packages, touch cloud/production resources, or perform remote account operations unless the user explicitly requests that exact operation. Local commit is allowed only when the user asks for commit work.
 - Avoid destructive actions outside the active project unless the user explicitly scopes them.
 - When blocked, diagnose and try reasonable alternatives before asking the user.
 

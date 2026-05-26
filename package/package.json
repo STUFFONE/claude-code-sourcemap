@@ -1,6 +1,6 @@
 {
   "name": "@anthropic-ai/claude-code",
-  "version": "2.1.88-root-auto-super.1",
+  "version": "2.1.88-root-auto-enterprise-deepseek.1",
   "bin": {
     "claude": "cli.js"
   },
