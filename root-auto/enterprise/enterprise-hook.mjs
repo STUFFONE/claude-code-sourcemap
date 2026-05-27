@@ -150,10 +150,10 @@ function qualityThreshold(current) {
 
 function laneFromText(text) {
   const value = String(text || '')
+  if (/(qa|fact.?check|fact.?checking|claim|claims|test|verify|verification|quality|测试|验证|验收|事实核查|核实|声明)/i.test(value)) return 'qa'
+  if (/(reviewer|review|critic|critique|audit|审查|评审|复核|挑错|质检|评测|评估)/i.test(value)) return 'reviewer'
   if (/(architect|architecture|design|planner|规划|架构|设计|方案)/i.test(value)) return 'architect'
   if (/(research|search|evidence|web|browser|资料|调研|搜索|证据|联网)/i.test(value)) return 'research'
-  if (/(reviewer|review|critic|critique|audit|审查|评审|复核|挑错|质检)/i.test(value)) return 'reviewer'
-  if (/(qa|test|verify|verification|quality|测试|验证|验收)/i.test(value)) return 'qa'
   if (/(ops|security|deploy|release|安全|运维|部署|发布)/i.test(value)) return 'ops_security'
   if (/(implement|code|edit|patch|build|实现|编码|修改|开发)/i.test(value)) return 'implementer'
   return 'specialist'
@@ -169,7 +169,7 @@ function requiredLanesFor(current) {
   if (current.intent === 'creative_work' && longCreativeRequest(current)) lanes.push('reviewer')
   if (current.intent === 'research_work' || current.needsWeb || current.requiresWeb) lanes.push('research')
   if (current.intent === 'engineering_work' || current.workClass === 'engineering' || current.editCount > 0) {
-    if (current.complex || current.changedFiles?.length >= 2 || current.editCount >= 3) lanes.push('architect')
+    if ((current.complex || current.changedFiles?.length >= 2 || current.editCount >= 3) && !current.todoUsed && current.editCount === 0) lanes.push('architect')
     if (current.editCount > 0) lanes.push('reviewer', 'qa')
   }
   if (current.intent === 'remote_ops') lanes.push('ops_security', 'reviewer')
@@ -1132,15 +1132,7 @@ function stopGate(input) {
       },
     })
     saveState(input, state)
-    return {
-      suppressOutput: true,
-      systemMessage: [
-        `Enterprise progress update accepted while waiting for active lane(s): ${waitingLanes.join(', ')}.`,
-        softViolations.length
-          ? `When the lanes finish, satisfy these before finalizing: ${softViolations.join(' | ')}`
-          : 'Continue waiting or integrate lane results when ready.',
-      ].join('\n'),
-    }
+    return null
   }
 
   appendLedger(input, {
@@ -1254,7 +1246,8 @@ async function main() {
       return
     case 'SubagentStart': {
       const state = currentState(input)
-      const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''}`)
+      const startText = `${input.agent_type || ''} ${input.agent_id || ''} ${input.description || ''} ${input.prompt || ''} ${input.name || ''}`
+      const lane = laneFromText(startText)
       const agentId = String(input.agent_id || `${lane}-${Date.now()}`)
       ensureRuntimePlan(state.current)
       completePhase(state.current, 'delegate', `subagent_start:${lane}`)
