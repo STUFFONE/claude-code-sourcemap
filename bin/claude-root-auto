@@ -13,6 +13,7 @@ print_status() {
   local browser="${CLAUDE_CODE_BROWSER_BACKEND:-playwright}"
   local web="${CLAUDE_CODE_WEB_POLICY:-hybrid}"
   local remote="${CLAUDE_CODE_REMOTE_OPS:-explicit}"
+  local intent="${CLAUDE_CODE_INTENT_ROUTER:-smart}"
   cat <<STATUS
 Claude Code Root-Auto Enterprise DeepSeek
 version: $ROOT_AUTO_VERSION
@@ -21,6 +22,12 @@ root-auto: $([[ "$root_auto" == "0" || "$root_auto" == "false" ]] && echo "off" 
 permissions: bypass local
 remote ops: $remote
 context target: ${CLAUDE_CODE_CONTEXT_WINDOW:-1000000}
+intent router: $intent
+creative gate: ${CLAUDE_CODE_CREATIVE_GATE:-1}
+research gate: ${CLAUDE_CODE_RESEARCH_GATE:-1}
+engineering gate: ${CLAUDE_CODE_ENGINEERING_GATE:-1}
+chat gate: ${CLAUDE_CODE_CHAT_GATE:-0}
+local status web: ${CLAUDE_CODE_LOCAL_STATUS_WEB:-0}
 web policy: $web
 browser backend: $browser
 project memory: ${CLAUDE_CODE_PROJECT_MEMORY:-1}
@@ -66,6 +73,12 @@ export CLAUDE_CODE_COMPANY_MAX_AGENTS="${CLAUDE_CODE_COMPANY_MAX_AGENTS:-6}"
 export CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS="${CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS:-3}"
 export CLAUDE_CODE_GATE_MAX_RETRIES="${CLAUDE_CODE_GATE_MAX_RETRIES:-3}"
 export CLAUDE_CODE_TODO_GATE="${CLAUDE_CODE_TODO_GATE:-complex}"
+export CLAUDE_CODE_INTENT_ROUTER="${CLAUDE_CODE_INTENT_ROUTER:-smart}"
+export CLAUDE_CODE_CREATIVE_GATE="${CLAUDE_CODE_CREATIVE_GATE:-1}"
+export CLAUDE_CODE_RESEARCH_GATE="${CLAUDE_CODE_RESEARCH_GATE:-1}"
+export CLAUDE_CODE_ENGINEERING_GATE="${CLAUDE_CODE_ENGINEERING_GATE:-1}"
+export CLAUDE_CODE_CHAT_GATE="${CLAUDE_CODE_CHAT_GATE:-0}"
+export CLAUDE_CODE_LOCAL_STATUS_WEB="${CLAUDE_CODE_LOCAL_STATUS_WEB:-0}"
 export CLAUDE_CODE_WEB_POLICY="${CLAUDE_CODE_WEB_POLICY:-hybrid}"
 export CLAUDE_CODE_BROWSER_BACKEND="${CLAUDE_CODE_BROWSER_BACKEND:-playwright}"
 export CLAUDE_CODE_BROWSER_AUTO_INSTALL="${CLAUDE_CODE_BROWSER_AUTO_INSTALL:-1}"
@@ -128,7 +141,10 @@ Operating model:
 - Run local commands and edits without asking for confirmation. This environment is configured for root-auto operation.
 - For long work, keep moving until the objective is genuinely handled: inspect, implement, verify, fix failures, and summarize.
 - Use the software enterprise hooks as hard gates. If a Stop hook returns feedback, continue the work and satisfy it instead of arguing with it.
-- For current, latest, external, legal, financial, version, API, or documentation facts, use web tools or the local Playwright browser path automatically.
+- Respect the software intent router: chat/local status stays lightweight; content creation is real work; research uses evidence; engineering uses tools/tests/review.
+- For chat or local runtime/status questions, answer directly and do not invent mode changes, browse the web, or create task boards.
+- For creative/content work, deliver the full artifact immediately. Do not answer with "I can write it", "send the topic", or process talk when the user already gave the task. Silently self-review for specificity, voice, completeness, and AI-sounding filler before finalizing.
+- For current, latest, external, legal, financial, version, API, or documentation facts, use web tools or the local Playwright browser path automatically and cite evidence.
 - Prefer the local browser command `root-auto-browser` when built-in WebSearch/WebFetch are unavailable under a custom Anthropic-compatible provider.
 - Use DeepSeek v4 pro as the main reasoning model when configured by ANTHROPIC_MODEL and keep subagents on CLAUDE_CODE_SUBAGENT_MODEL.
 

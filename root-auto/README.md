@@ -13,6 +13,11 @@ Runtime behavior:
 - Bash and PowerShell default timeouts are extended to 3 hours, max 6 hours.
 - Long blocking shell commands can auto-background, including sleep commands in root-auto mode.
 - Official self-update/install commands are disabled by the wrapper.
+- Smart intent routing is enabled by default:
+  - chat/local status questions stay lightweight and do not trigger web/Todo gates;
+  - content creation is treated as real work and must return the finished artifact;
+  - research/current/latest/docs work must use evidence;
+  - engineering work must inspect diffs and verify edits.
 - Web policy defaults to hybrid: built-in WebSearch/WebFetch first, local Playwright browser fallback.
 - Remote side effects remain explicit-only by software gate: push, publish, release, cloud/prod, and secret operations require direct current-turn user intent.
 
@@ -40,6 +45,12 @@ export BASH_MAX_TIMEOUT_MS=21600000
 export CLAUDE_CODE_COMPANY_MAX_AGENTS=6
 export CLAUDE_CODE_GATE_MAX_RETRIES=3
 export CLAUDE_CODE_TODO_GATE=complex
+export CLAUDE_CODE_INTENT_ROUTER=smart
+export CLAUDE_CODE_CREATIVE_GATE=1
+export CLAUDE_CODE_RESEARCH_GATE=1
+export CLAUDE_CODE_ENGINEERING_GATE=1
+export CLAUDE_CODE_CHAT_GATE=0
+export CLAUDE_CODE_LOCAL_STATUS_WEB=0
 ```
 
 Installed skills:
