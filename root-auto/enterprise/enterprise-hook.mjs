@@ -137,6 +137,11 @@ function longCreativeRequest(current) {
   return Boolean(current?.complex) || /(长文|长帖|完整|深度|thread|essay|article|long-form|10\s*(条|posts?)|十条)/i.test(prompt)
 }
 
+function isSimpleRemotePrompt(text) {
+  const value = String(text || '').trim()
+  return /^(push|git\s+push|推送|上传\s*github|push\s+main|push\s+to\s+github)$/i.test(value)
+}
+
 function qualityThreshold(current) {
   if (envMode('CLAUDE_CODE_QUALITY_GATE', 'hard') === 'off') return 0
   if (current.intent === 'creative_work') return envInt('CLAUDE_CODE_QUALITY_MIN_CREATIVE', 85)
@@ -144,7 +149,7 @@ function qualityThreshold(current) {
   if (current.intent === 'engineering_work' || current.workClass === 'engineering' || current.editCount > 0) {
     return envInt('CLAUDE_CODE_QUALITY_MIN_ENGINEERING', 90)
   }
-  if (current.intent === 'remote_ops') return envInt('CLAUDE_CODE_QUALITY_MIN_REMOTE', 90)
+  if (current.intent === 'remote_ops') return current.simpleRemote ? 0 : envInt('CLAUDE_CODE_QUALITY_MIN_REMOTE', 90)
   return 0
 }
 
@@ -172,13 +177,14 @@ function requiredLanesFor(current) {
     if ((current.complex || current.changedFiles?.length >= 2 || current.editCount >= 3) && !current.todoUsed && current.editCount === 0) lanes.push('architect')
     if (current.editCount > 0) lanes.push('reviewer', 'qa')
   }
-  if (current.intent === 'remote_ops') lanes.push('ops_security', 'reviewer')
+  if (current.intent === 'remote_ops' && !current.simpleRemote) lanes.push('ops_security', 'reviewer')
   return unique(lanes)
 }
 
 function requiredPhasesFor(current) {
   if (current.intent === 'chat' || current.intent === 'local_status') return ['intake', 'classify', 'finalize']
   if (current.intent === 'discussion' && !current.complex) return ['intake', 'classify', 'finalize']
+  if (current.intent === 'remote_ops' && current.simpleRemote) return ['intake', 'classify', 'execute', 'finalize']
 
   const phases = ['intake', 'classify']
   if (current.intent === 'engineering_work' || current.intent === 'remote_ops' || (current.intent === 'research_work' && current.complex)) phases.push('plan')
@@ -442,6 +448,7 @@ function classifyPrompt(prompt) {
   const explicitRemote =
     /(推送|上传\s*github|提交并推送|发布|部署|release|git push|push to|publish|deploy)/i.test(text) ||
     /\b(push|publish|release|deploy)\b/i.test(lower)
+  const simpleRemote = explicitRemote && isSimpleRemotePrompt(text)
 
   const localStatusQuestion = matchesAny(text, [
     /(现在|当前|目前|此刻|这里).{0,24}(是不是|是否|是)?.{0,24}(ceo|super|企业|enterprise|root-auto|root auto|模式|状态|配置|版本)/i,
@@ -564,6 +571,7 @@ function classifyPrompt(prompt) {
     needsWeb,
     complex,
     explicitRemote,
+    simpleRemote,
     confidence: reasons.length ? 'high' : 'low',
     reasons,
     gates: {
@@ -625,6 +633,7 @@ function currentState(input) {
       needsWeb: false,
       complex: false,
       explicitRemote: false,
+      simpleRemote: false,
       confidence: 'low',
       reasons: [],
       gates: {},
@@ -751,6 +760,10 @@ function isRemoteCommand(command) {
     /\b(rsync|scp)\b[^|&;]*:/i.test(command)
 }
 
+function isGitPushCommand(command) {
+  return /\bgit\s+push\b/i.test(String(command || ''))
+}
+
 function isDangerousOutOfProject(command, cwd) {
   if (!/\brm\s+(-[A-Za-z]*r[A-Za-z]*f|-rf|-fr)\b/.test(command)) return false
   if (/\brm\s+(-[A-Za-z]*r[A-Za-z]*f|-rf|-fr)\s+\/(\s|$)/.test(command)) return true
@@ -792,6 +805,13 @@ function markPostTool(input) {
   }
   if (tool === 'Bash') {
     completePhase(current, 'execute', 'bash')
+    if (isRemoteCommand(command)) {
+      current.remoteOpsRan = true
+      current.remoteOpsType = isGitPushCommand(command) ? 'git_push' : 'remote'
+      const response = JSON.stringify(redact(input.tool_response || {}))
+      current.remoteOpsFailed = /(exit\s*code[^0-9]*[1-9]|failed|error|fatal|denied|rejected|Command failed)/i.test(response)
+      if (current.simpleRemote && !current.remoteOpsFailed) completePhase(current, 'verify', 'remote command completed')
+    }
     if (isTestCommand(command)) {
       current.testRan = true
       current.verificationRan = true
@@ -852,6 +872,11 @@ function markToolFailure(input) {
     current.verificationRan = true
     current.verificationFailed = true
     completePhase(current, 'verify', 'failed test command')
+  }
+  if (tool === 'Bash' && isRemoteCommand(command)) {
+    current.remoteOpsRan = true
+    current.remoteOpsType = isGitPushCommand(command) ? 'git_push' : 'remote'
+    current.remoteOpsFailed = true
   }
   ensureRuntimePlan(current)
   saveState(input, state)
@@ -1035,7 +1060,7 @@ function stopGate(input) {
   const violations = []
   const assistantText = compactAssistantText(lastAssistantText(input))
   const statusOnlyUpdate = isStatusOnlyUpdate(assistantText)
-  if (assistantText && current.workClass !== 'none' && !statusOnlyUpdate) completePhase(current, 'execute', 'assistant output')
+  if (assistantText && current.workClass !== 'none' && current.intent !== 'remote_ops' && !statusOnlyUpdate) completePhase(current, 'execute', 'assistant output')
   ensureRuntimePlan(current)
   const waitingLanes = activeLanes(current)
   const progressUpdate = isProgressUpdate(assistantText)
@@ -1089,6 +1114,14 @@ function stopGate(input) {
     }
     if (changedCount >= 4 && !current.reviewerUsed && !current.agentUsed) {
       violations.push('Use a reviewer/QA subagent or equivalent review pass for broad multi-file changes.')
+    }
+  }
+
+  if (current.intent === 'remote_ops' && current.simpleRemote) {
+    if (!current.remoteOpsRan) {
+      violations.push('Run the explicitly requested git push before reporting it as done.')
+    } else if (current.remoteOpsFailed) {
+      violations.push('The git push failed. Fix the remote operation or report the concrete blocker.')
     }
   }
 
@@ -1278,8 +1311,9 @@ async function main() {
     }
     case 'SubagentStop': {
       const state = currentState(input)
-      const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''} ${input.last_assistant_message || ''}`)
       const agentId = String(input.agent_id || '')
+      const storedLane = agentId ? state.current.activeAgents?.[agentId]?.lane : null
+      const lane = storedLane || laneFromText(`${input.agent_type || ''} ${input.agent_id || ''} ${input.last_assistant_message || ''}`)
       if (agentId && state.current.activeAgents?.[agentId]) {
         state.current.activeAgents[agentId] = { ...state.current.activeAgents[agentId], status: 'completed', completedAt: new Date().toISOString() }
         delete state.current.activeAgents[agentId]
