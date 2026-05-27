@@ -117,6 +117,191 @@ function compactAssistantText(text) {
     .trim()
 }
 
+function unique(values) {
+  return [...new Set((values || []).filter(Boolean))]
+}
+
+function addUnique(target, value) {
+  if (!value) return
+  if (!Array.isArray(target)) return
+  if (!target.includes(value)) target.push(value)
+}
+
+function envInt(name, fallback) {
+  const parsed = Number.parseInt(process.env[name] || `${fallback}`, 10)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function longCreativeRequest(current) {
+  const prompt = String(current?.prompt || '')
+  return Boolean(current?.complex) || /(长文|长帖|完整|深度|thread|essay|article|long-form|10\s*(条|posts?)|十条)/i.test(prompt)
+}
+
+function qualityThreshold(current) {
+  if (envMode('CLAUDE_CODE_QUALITY_GATE', 'hard') === 'off') return 0
+  if (current.intent === 'creative_work') return envInt('CLAUDE_CODE_QUALITY_MIN_CREATIVE', 85)
+  if (current.intent === 'research_work') return envInt('CLAUDE_CODE_QUALITY_MIN_RESEARCH', 85)
+  if (current.intent === 'engineering_work' || current.workClass === 'engineering' || current.editCount > 0) {
+    return envInt('CLAUDE_CODE_QUALITY_MIN_ENGINEERING', 90)
+  }
+  if (current.intent === 'remote_ops') return envInt('CLAUDE_CODE_QUALITY_MIN_REMOTE', 90)
+  return 0
+}
+
+function laneFromText(text) {
+  const value = String(text || '')
+  if (/(architect|architecture|design|planner|规划|架构|设计|方案)/i.test(value)) return 'architect'
+  if (/(research|search|evidence|web|browser|资料|调研|搜索|证据|联网)/i.test(value)) return 'research'
+  if (/(reviewer|review|critic|critique|audit|审查|评审|复核|挑错|质检)/i.test(value)) return 'reviewer'
+  if (/(qa|test|verify|verification|quality|测试|验证|验收)/i.test(value)) return 'qa'
+  if (/(ops|security|deploy|release|安全|运维|部署|发布)/i.test(value)) return 'ops_security'
+  if (/(implement|code|edit|patch|build|实现|编码|修改|开发)/i.test(value)) return 'implementer'
+  return 'specialist'
+}
+
+function requiredLanesFor(current) {
+  const policy = envMode('CLAUDE_CODE_DELEGATION_POLICY', 'proactive')
+  if (policy === 'off' || policy === 'none') return []
+  if (current.intent === 'chat' || current.intent === 'local_status') return []
+  if (current.intent === 'discussion' && !current.complex) return []
+
+  const lanes = []
+  if (current.intent === 'creative_work' && longCreativeRequest(current)) lanes.push('reviewer')
+  if (current.intent === 'research_work' || current.needsWeb || current.requiresWeb) lanes.push('research')
+  if (current.intent === 'engineering_work' || current.workClass === 'engineering' || current.editCount > 0) {
+    if (current.complex || current.changedFiles?.length >= 2 || current.editCount >= 3) lanes.push('architect')
+    if (current.editCount > 0) lanes.push('reviewer', 'qa')
+  }
+  if (current.intent === 'remote_ops') lanes.push('ops_security', 'reviewer')
+  return unique(lanes)
+}
+
+function requiredPhasesFor(current) {
+  if (current.intent === 'chat' || current.intent === 'local_status') return ['intake', 'classify', 'finalize']
+  if (current.intent === 'discussion' && !current.complex) return ['intake', 'classify', 'finalize']
+
+  const phases = ['intake', 'classify']
+  if (current.intent === 'engineering_work' || current.intent === 'remote_ops' || (current.intent === 'research_work' && current.complex)) phases.push('plan')
+  if (requiredLanesFor(current).length > 0) phases.push('delegate')
+  if (current.workClass !== 'none' && current.intent !== 'research_work') phases.push('execute')
+  if (current.intent === 'research_work' || current.needsWeb || current.requiresWeb || current.editCount > 0) phases.push('verify')
+  if (requiredLanesFor(current).some(lane => ['reviewer', 'qa', 'ops_security'].includes(lane))) phases.push('review')
+  phases.push('finalize')
+  return unique(phases)
+}
+
+function initializeRuntimePlan(current) {
+  current.phase = 'classify'
+  current.phaseHistory = [
+    { phase: 'intake', ts: new Date().toISOString(), reason: 'user_prompt' },
+    { phase: 'classify', ts: new Date().toISOString(), reason: current.intent || 'unknown' },
+  ]
+  current.completedPhases = ['intake', 'classify']
+  current.requiredPhases = requiredPhasesFor(current)
+  current.expectedLanes = requiredLanesFor(current)
+  current.completedLanes = []
+  current.laneEvents = []
+  current.toolCount = 0
+  current.quality = null
+}
+
+function ensureRuntimePlan(current) {
+  current.phase ||= 'classify'
+  current.phaseHistory ||= []
+  current.completedPhases ||= []
+  current.requiredPhases ||= []
+  current.expectedLanes ||= []
+  current.completedLanes ||= []
+  current.laneEvents ||= []
+  current.toolCount ||= 0
+  current.quality ||= null
+  for (const phase of ['intake', 'classify']) addUnique(current.completedPhases, phase)
+  current.requiredPhases = requiredPhasesFor(current)
+  current.expectedLanes = requiredLanesFor(current)
+}
+
+function completePhase(current, phase, reason) {
+  ensureRuntimePlan(current)
+  addUnique(current.completedPhases, phase)
+  current.phase = phase
+  current.phaseHistory.push({ phase, ts: new Date().toISOString(), reason: truncate(reason || '', 160) })
+}
+
+function completeLane(current, lane, reason) {
+  ensureRuntimePlan(current)
+  addUnique(current.completedLanes, lane)
+  current.laneEvents.push({ lane, ts: new Date().toISOString(), reason: truncate(reason || '', 240) })
+  completePhase(current, 'delegate', lane)
+  if (lane === 'reviewer' || lane === 'qa' || lane === 'ops_security') {
+    current.reviewerUsed = true
+    completePhase(current, 'review', lane)
+  }
+  if (lane === 'research') completePhase(current, 'verify', lane)
+}
+
+function scoreQuality(current, input) {
+  ensureRuntimePlan(current)
+  const assistantText = compactAssistantText(lastAssistantText(input))
+  const needsWeb = Boolean(current.needsWeb ?? current.requiresWeb)
+  const missingLanes = current.expectedLanes.filter(lane => !current.completedLanes.includes(lane))
+  const missingPhases = current.requiredPhases.filter(phase => phase !== 'finalize' && !current.completedPhases.includes(phase))
+  const longCreative = longCreativeRequest(current)
+  const creativeMinLength = longCreative ? 300 : 80
+  const nonDelivery =
+    /(我可以(帮你)?写|你直接下指令|随时可以开始|告诉我(主题|方向|需求)|给我(主题|方向|素材)|我会帮你|可以开始写|需要你提供|send me|give me the topic|i can write|i can help write|if you want|如果你需要)/i.test(assistantText)
+
+  let deliveryScore = 100
+  if (current.intent === 'creative_work') {
+    if (!assistantText) deliveryScore = 0
+    else if (nonDelivery && assistantText.length < 500) deliveryScore = 15
+    else if (assistantText.length < creativeMinLength) deliveryScore = longCreative ? 55 : 70
+    else deliveryScore = 100
+  } else if (current.workClass !== 'none' && !assistantText) {
+    deliveryScore = 70
+  }
+
+  const evidenceScore = needsWeb ? (current.webUsed || current.browserUsed ? 100 : 0) : 100
+  let verificationScore = 100
+  if (current.editCount > 0) {
+    if (current.verificationFailed) verificationScore = 20
+    else if (current.diffViewed && current.verificationRan) verificationScore = 100
+    else if (current.diffViewed || current.verificationRan) verificationScore = 55
+    else verificationScore = 0
+  }
+  const completedExpectedLanes = current.expectedLanes.filter(lane => current.completedLanes.includes(lane))
+  const reviewScore = current.expectedLanes.length === 0 ? 100 : Math.min(100, Math.max(0, Math.round((completedExpectedLanes.length / current.expectedLanes.length) * 100)))
+  let focusScore = 100
+  if ((current.intent === 'chat' || current.intent === 'local_status') && current.toolCount > 0) focusScore = 40
+  if (current.intent === 'local_status' && (current.webUsed || current.browserUsed)) focusScore = 0
+
+  let finalScore = 100
+  if (current.intent === 'creative_work') {
+    finalScore = Math.round(deliveryScore * 0.55 + reviewScore * 0.2 + evidenceScore * 0.15 + focusScore * 0.1)
+  } else if (current.intent === 'research_work') {
+    finalScore = Math.round(evidenceScore * 0.55 + reviewScore * 0.2 + deliveryScore * 0.15 + focusScore * 0.1)
+  } else if (current.intent === 'engineering_work' || current.workClass === 'engineering' || current.editCount > 0) {
+    finalScore = Math.round(verificationScore * 0.45 + reviewScore * 0.25 + deliveryScore * 0.1 + evidenceScore * 0.1 + focusScore * 0.1)
+  } else if (current.intent === 'remote_ops') {
+    finalScore = Math.round(verificationScore * 0.35 + reviewScore * 0.3 + evidenceScore * 0.15 + deliveryScore * 0.1 + focusScore * 0.1)
+  }
+
+  const quality = {
+    threshold: qualityThreshold(current),
+    finalScore,
+    deliveryScore,
+    evidenceScore,
+    verificationScore,
+    reviewScore,
+    focusScore,
+    missingLanes,
+    missingPhases,
+    assistantChars: assistantText.length,
+    nonDelivery,
+  }
+  current.quality = quality
+  return quality
+}
+
 function safeSessionId(input) {
   return String(input?.session_id || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 120)
 }
@@ -140,6 +325,20 @@ function ensureProjectFiles(cwd) {
         repoType: 'unknown',
         testCommands: [],
         buildCommands: [],
+        toolRegistry: {
+          codeSearch: 'rg',
+          diff: 'git diff/status/show',
+          browser: 'root-auto-browser',
+          jsCheck: 'node --check',
+          shellCheck: 'bash -n',
+        },
+        qualityPolicy: {
+          gate: process.env.CLAUDE_CODE_QUALITY_GATE || 'hard',
+          creativeMin: envInt('CLAUDE_CODE_QUALITY_MIN_CREATIVE', 85),
+          researchMin: envInt('CLAUDE_CODE_QUALITY_MIN_RESEARCH', 85),
+          engineeringMin: envInt('CLAUDE_CODE_QUALITY_MIN_ENGINEERING', 90),
+        },
+        memoryScope: process.env.CLAUDE_CODE_PROJECT_MEMORY_SCOPE || 'project',
         riskPolicy: {
           localOps: 'auto',
           remoteOps: process.env.CLAUDE_CODE_REMOTE_OPS || 'explicit',
@@ -151,6 +350,21 @@ function ensureProjectFiles(cwd) {
     )
   }
   return dir
+}
+
+function readProjectMemorySummary(cwd) {
+  if (!isTruthy(process.env.CLAUDE_CODE_PROJECT_MEMORY ?? '1')) return ''
+  const file = join(enterpriseDir(cwd), 'memory.md')
+  if (!existsSync(file)) return ''
+  try {
+    const lines = readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter(line => line.trim() && !/raw auth|token|secret/i.test(line))
+      .slice(0, 18)
+    return truncate(lines.join('\n'), 1200)
+  } catch {
+    return ''
+  }
 }
 
 function statePath(input) {
@@ -352,6 +566,7 @@ function newTurn(input, prompt) {
     commandFailures: [],
     gateAttempts: 0,
   }
+  initializeRuntimePlan(state.current)
   saveState(input, state)
   appendLedger(input, { event: 'user_prompt', turn: state.turn, data: state.current })
   return state
@@ -381,6 +596,15 @@ function currentState(input) {
       gates: {},
       changedFiles: [],
       editCount: 0,
+      phase: 'classify',
+      phaseHistory: [],
+      requiredPhases: [],
+      completedPhases: ['intake', 'classify'],
+      expectedLanes: [],
+      completedLanes: [],
+      laneEvents: [],
+      toolCount: 0,
+      quality: null,
       todoUsed: false,
       testRan: false,
       verificationRan: false,
@@ -394,6 +618,7 @@ function currentState(input) {
       gateAttempts: 0,
     }
   }
+  ensureRuntimePlan(state.current)
   return state
 }
 
@@ -466,31 +691,52 @@ function markPostTool(input) {
   const toolInput = input.tool_input
   const command = commandText(input)
 
+  current.toolCount = (current.toolCount || 0) + 1
+
   if (/^(Write|Edit|MultiEdit|NotebookEdit)$/i.test(tool)) {
     current.editCount += 1
     rememberChangedFile(current, input.cwd, fileFromToolInput(toolInput))
+    completePhase(current, 'execute', tool)
+    addUnique(current.completedLanes, 'implementer')
   }
-  if (tool === 'TodoWrite') current.todoUsed = true
-  if (tool === 'WebFetch' || tool === 'WebSearch') current.webUsed = true
+  if (tool === 'TodoWrite') {
+    current.todoUsed = true
+    completePhase(current, 'plan', tool)
+  }
+  if (tool === 'WebFetch' || tool === 'WebSearch') {
+    current.webUsed = true
+    completePhase(current, 'verify', tool)
+    completeLane(current, 'research', tool)
+  }
   if (tool === 'Task' || tool === 'Agent') {
     current.agentUsed = true
     const text = JSON.stringify(summarizeToolInput(tool, toolInput))
+    completeLane(current, laneFromText(text), text)
     if (/(review|reviewer|qa|test|verify|审查|测试|验证)/i.test(text)) current.reviewerUsed = true
   }
   if (tool === 'Bash') {
+    completePhase(current, 'execute', 'bash')
     if (isTestCommand(command)) {
       current.testRan = true
       current.verificationRan = true
+      completePhase(current, 'verify', 'test command')
+      completeLane(current, 'qa', command)
       const response = JSON.stringify(redact(input.tool_response || {}))
       if (/(exit\s*code[^0-9]*[1-9]|failed|error|FAIL|Command failed)/i.test(response)) current.verificationFailed = true
       else current.verificationFailed = false
     }
-    if (isDiffCommand(command)) current.diffViewed = true
+    if (isDiffCommand(command)) {
+      current.diffViewed = true
+      completePhase(current, 'verify', 'diff command')
+    }
     if (isBrowserCommand(command)) {
       current.browserUsed = true
       current.webUsed = true
+      completePhase(current, 'verify', 'browser command')
+      completeLane(current, 'research', command)
     }
   }
+  ensureRuntimePlan(current)
 
   saveState(input, state)
   appendLedger(input, {
@@ -505,6 +751,10 @@ function markPostTool(input) {
       testRan: current.testRan,
       webUsed: current.webUsed,
       agentUsed: current.agentUsed,
+      phase: current.phase,
+      completedPhases: current.completedPhases,
+      expectedLanes: current.expectedLanes,
+      completedLanes: current.completedLanes,
     },
   })
 }
@@ -514,16 +764,20 @@ function markToolFailure(input) {
   const current = state.current
   const tool = input.tool_name || ''
   const command = commandText(input)
+  current.toolCount = (current.toolCount || 0) + 1
   current.commandFailures.push({
     tool,
     command: truncate(redactString(command), 800),
     error: truncate(redactString(input.error || ''), 800),
   })
+  if (tool === 'Bash') completePhase(current, 'execute', 'failed bash')
   if (tool === 'Bash' && isTestCommand(command)) {
     current.testRan = true
     current.verificationRan = true
     current.verificationFailed = true
+    completePhase(current, 'verify', 'failed test command')
   }
+  ensureRuntimePlan(current)
   saveState(input, state)
   appendLedger(input, { event: 'tool_failure', turn: current.turn, data: { tool, command, error: input.error } })
 }
@@ -543,6 +797,11 @@ function runtimeStatusText() {
     `effort: ${process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.CLAUDE_CODE_ENTERPRISE_LEVEL || 'max'}`,
     `company mode: ${process.env.CLAUDE_CODE_COMPANY_MODE || 'dynamic'}`,
     `max agents: ${process.env.CLAUDE_CODE_COMPANY_MAX_AGENTS || '6'}`,
+    `phase machine: ${enabledText(process.env.CLAUDE_CODE_PHASE_MACHINE)}`,
+    `quality gate: ${process.env.CLAUDE_CODE_QUALITY_GATE || 'hard'}`,
+    `delegation policy: ${process.env.CLAUDE_CODE_DELEGATION_POLICY || 'proactive'}`,
+    `project memory scope: ${process.env.CLAUDE_CODE_PROJECT_MEMORY_SCOPE || 'project'}`,
+    `tool registry: ${enabledText(process.env.CLAUDE_CODE_TOOL_REGISTRY)}`,
     `todo gate: ${process.env.CLAUDE_CODE_TODO_GATE || 'complex'}`,
     `creative gate: ${enabledText(process.env.CLAUDE_CODE_CREATIVE_GATE)}`,
     `research gate: ${enabledText(process.env.CLAUDE_CODE_RESEARCH_GATE)}`,
@@ -560,22 +819,30 @@ function runtimeStatusText() {
 
 function enterpriseContext(input, state) {
   const current = state.current || {}
+  ensureRuntimePlan(current)
+  const memorySummary = readProjectMemorySummary(input.cwd || process.cwd())
   const lines = [
     'Enterprise Runtime Context:',
     `- Version: ${VERSION}`,
-    '- Mode: CEO scheduler with software intent router and gates.',
+    '- Mode: CEO scheduler with software intent router, phase machine, proactive lanes, and hard quality gates.',
     '- Local root-auto actions are allowed; do not ask for yes/no confirmation for local reads, edits, installs, tests, or dev servers.',
     '- Remote side effects are explicit-only: git push, publish, release, cloud/prod changes, secret operations.',
     '- Intent routing: chat/local_status/discussion stay lightweight; creative_work delivers finished content; research_work gathers evidence; engineering_work executes with verification; remote_ops require explicit user intent.',
     '- For chat or local_status, answer directly from local runtime context. Do not browse, run tools, or create TodoWrite unless the user asks for real work.',
-    '- For creative_work, treat content creation as real work: deliver the complete polished artifact now, silently self-review it, and never answer with "I can write" or "give me the topic" when the user already requested content.',
-    '- For research_work or current/latest/external/version/API/docs facts, browse or use root-auto-browser and cite sources.',
-    '- For engineering_work, use TodoWrite for complex/multi-file work, use Task/subagents for separable lanes, inspect diff, and run the closest test/check/build after edits.',
-    '- For JS-heavy pages or unavailable WebSearch, use: root-auto-browser search|fetch|open|snapshot|screenshot|extract.',
+    '- For creative_work, deliver the complete polished artifact now, self-review it for structure, voice, specificity, and AI-sounding filler, and never answer with "I can write" when the user already requested content.',
+    '- For research_work or current/latest/external/version/API/docs facts, use web/root-auto-browser evidence and cite sources.',
+    '- For engineering_work, move through plan/delegate/execute/verify/review: TodoWrite for broad work, Task lanes for architect/reviewer/QA when expected, diff inspection, and the closest test/check/build after edits.',
+    '- Tool registry: rg for code search, git diff/status/show for review, node --check for JS, bash -n for shell, root-auto-browser for JS-heavy or unavailable web tools.',
     `- Current turn intent: ${current.intent || 'unknown'}, workClass: ${current.workClass || 'none'}, mode: ${current.mode || 'mixed'}, complex: ${Boolean(current.complex)}, needsWeb: ${Boolean(current.needsWeb ?? current.requiresWeb)}.`,
+    `- Phase: ${current.phase || 'classify'}; required phases: ${(current.requiredPhases || []).join(', ') || 'none'}; completed phases: ${(current.completedPhases || []).join(', ') || 'none'}.`,
+    `- Expected lanes: ${(current.expectedLanes || []).join(', ') || 'none'}; completed lanes: ${(current.completedLanes || []).join(', ') || 'none'}; quality threshold: ${qualityThreshold(current) || 'none'}.`,
     current.reasons?.length ? `- Classifier reasons: ${current.reasons.join(', ')}.` : '- Classifier reasons: none.',
     '- Never print or store raw secrets. Ledger and memory are project-local under .claude/enterprise.',
   ]
+  if (memorySummary) {
+    lines.push('Project memory summary:')
+    lines.push(memorySummary)
+  }
   if (current.intent === 'local_status') {
     lines.push('Local runtime status for this answer; use this instead of web evidence:')
     lines.push(runtimeStatusText())
@@ -679,10 +946,14 @@ function stopGate(input) {
   const state = currentState(input)
   const current = state.current
   const violations = []
+  const assistantText = compactAssistantText(lastAssistantText(input))
+  if (assistantText && current.workClass !== 'none') completePhase(current, 'execute', 'assistant output')
+  ensureRuntimePlan(current)
   const changedCount = current.changedFiles.length
   const gatesActive = []
   const gatesSkipped = []
   const needsWeb = Boolean(current.needsWeb ?? current.requiresWeb)
+  const hardQualityGate = envMode('CLAUDE_CODE_QUALITY_GATE', 'hard') === 'hard'
   const chatLike = ['chat', 'local_status', 'discussion'].includes(current.intent) && current.editCount === 0 && !needsWeb
   const engineeringGate =
     isTruthy(process.env.CLAUDE_CODE_ENGINEERING_GATE ?? '1') &&
@@ -731,12 +1002,21 @@ function stopGate(input) {
     }
   }
 
+  const missingLanes = current.expectedLanes.filter(lane => !current.completedLanes.includes(lane))
+  if (!chatLike && missingLanes.length > 0) {
+    violations.push(`Complete the expected specialist lane(s) before finalizing: ${missingLanes.join(', ')}.`)
+  }
+
+  const missingPhases = current.requiredPhases.filter(phase => phase !== 'finalize' && !current.completedPhases.includes(phase))
+  if (!chatLike && missingPhases.length > 0) {
+    violations.push(`Advance the runtime phase machine before finalizing; missing phase(s): ${missingPhases.join(', ')}.`)
+  }
+
   if (researchGate && !current.webUsed && !current.browserUsed) {
     violations.push('Use web evidence for current/latest/external/version/API/docs facts before finalizing.')
   }
 
   if (creativeGate) {
-    const assistantText = compactAssistantText(lastAssistantText(input))
     const prompt = String(current.prompt || '')
     const longCreative = current.complex || /(长文|长帖|完整|深度|thread|essay|article|long-form|10\s*(条|posts?)|十条)/i.test(prompt)
     const minLength = longCreative ? 300 : 80
@@ -752,12 +1032,23 @@ function stopGate(input) {
     }
   }
 
+  const quality = scoreQuality(current, input)
+  if (hardQualityGate && quality.threshold > 0 && quality.finalScore < quality.threshold) {
+    violations.push(`Quality score ${quality.finalScore}/${quality.threshold} is below the hard gate. Improve the missing dimensions before finalizing.`)
+  }
+
   appendLedger(input, {
     event: 'stop_gate',
     turn: current.turn,
     data: {
       intent: current.intent,
       workClass: current.workClass,
+      phase: current.phase,
+      requiredPhases: current.requiredPhases,
+      completedPhases: current.completedPhases,
+      expectedLanes: current.expectedLanes,
+      completedLanes: current.completedLanes,
+      quality,
       gatesActive,
       gatesSkipped,
       violations,
@@ -773,7 +1064,11 @@ function stopGate(input) {
     },
   })
 
-  if (violations.length === 0) return null
+  if (violations.length === 0) {
+    completePhase(current, 'finalize', 'stop gate passed')
+    saveState(input, state)
+    return null
+  }
 
   const maxRetries = Math.max(0, Number.parseInt(process.env.CLAUDE_CODE_GATE_MAX_RETRIES || '3', 10) || 0)
   if (current.gateAttempts >= maxRetries) {
@@ -853,19 +1148,27 @@ async function main() {
       return
     case 'SubagentStart': {
       const state = currentState(input)
-      appendLedger(input, { event: 'subagent_start', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id } })
+      const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''}`)
+      ensureRuntimePlan(state.current)
+      completePhase(state.current, 'delegate', `subagent_start:${lane}`)
+      state.current.laneEvents.push({ lane, status: 'started', ts: new Date().toISOString(), reason: 'subagent_start' })
+      saveState(input, state)
+      appendLedger(input, { event: 'subagent_start', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane } })
       jsonOut({
         suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'SubagentStart',
-          additionalContext: 'Enterprise subagent: return structured summary, evidence, changed files, commands/tests, risks, and next action.',
+          additionalContext: `Enterprise subagent lane: ${lane}. Return structured summary, evidence, changed files, commands/tests, risks, quality concerns, and next action.`,
         },
       })
       return
     }
     case 'SubagentStop': {
       const state = currentState(input)
-      appendLedger(input, { event: 'subagent_stop', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, last: truncate(input.last_assistant_message || '', 1200) } })
+      const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''} ${input.last_assistant_message || ''}`)
+      completeLane(state.current, lane, 'subagent_stop')
+      saveState(input, state)
+      appendLedger(input, { event: 'subagent_stop', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane, last: truncate(input.last_assistant_message || '', 1200) } })
       return
     }
     case 'PreCompact': {

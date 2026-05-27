@@ -12,6 +12,7 @@ Include:
 - Active or planned specialist lanes.
 - Task board status.
 - Verification status.
+- Quality gate score/status when available.
 - Enterprise gate status.
 - Web/browser evidence status when relevant.
 - Key risks or blockers.

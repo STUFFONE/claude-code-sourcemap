@@ -18,6 +18,11 @@ Runtime behavior:
   - content creation is treated as real work and must return the finished artifact;
   - research/current/latest/docs work must use evidence;
   - engineering work must inspect diffs and verify edits.
+- Super Individual Runtime v2 is enabled by default:
+  - work moves through phase machine checkpoints: intake, classify, plan, delegate, execute, verify, review, finalize;
+  - hard quality scoring blocks lazy finalization for creative, research, engineering, and remote work;
+  - proactive lanes request research, critic, architect, reviewer, QA, and ops/security work when the task needs it;
+  - project memory and tool registry stay project-local under `.claude/enterprise/`.
 - Web policy defaults to hybrid: built-in WebSearch/WebFetch first, local Playwright browser fallback.
 - Remote side effects remain explicit-only by software gate: push, publish, release, cloud/prod, and secret operations require direct current-turn user intent.
 
@@ -46,11 +51,19 @@ export CLAUDE_CODE_COMPANY_MAX_AGENTS=6
 export CLAUDE_CODE_GATE_MAX_RETRIES=3
 export CLAUDE_CODE_TODO_GATE=complex
 export CLAUDE_CODE_INTENT_ROUTER=smart
+export CLAUDE_CODE_PHASE_MACHINE=1
+export CLAUDE_CODE_QUALITY_GATE=hard
+export CLAUDE_CODE_QUALITY_MIN_CREATIVE=85
+export CLAUDE_CODE_QUALITY_MIN_RESEARCH=85
+export CLAUDE_CODE_QUALITY_MIN_ENGINEERING=90
+export CLAUDE_CODE_DELEGATION_POLICY=proactive
+export CLAUDE_CODE_TOOL_REGISTRY=1
 export CLAUDE_CODE_CREATIVE_GATE=1
 export CLAUDE_CODE_RESEARCH_GATE=1
 export CLAUDE_CODE_ENGINEERING_GATE=1
 export CLAUDE_CODE_CHAT_GATE=0
 export CLAUDE_CODE_LOCAL_STATUS_WEB=0
+export CLAUDE_CODE_PROJECT_MEMORY_SCOPE=project
 ```
 
 Installed skills:

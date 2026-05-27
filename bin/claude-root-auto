@@ -14,6 +14,9 @@ print_status() {
   local web="${CLAUDE_CODE_WEB_POLICY:-hybrid}"
   local remote="${CLAUDE_CODE_REMOTE_OPS:-explicit}"
   local intent="${CLAUDE_CODE_INTENT_ROUTER:-smart}"
+  local phase="${CLAUDE_CODE_PHASE_MACHINE:-1}"
+  local quality="${CLAUDE_CODE_QUALITY_GATE:-hard}"
+  local delegation="${CLAUDE_CODE_DELEGATION_POLICY:-proactive}"
   cat <<STATUS
 Claude Code Root-Auto Enterprise DeepSeek
 version: $ROOT_AUTO_VERSION
@@ -23,6 +26,10 @@ permissions: bypass local
 remote ops: $remote
 context target: ${CLAUDE_CODE_CONTEXT_WINDOW:-1000000}
 intent router: $intent
+phase machine: $phase
+quality gate: $quality
+quality mins: creative=${CLAUDE_CODE_QUALITY_MIN_CREATIVE:-85} research=${CLAUDE_CODE_QUALITY_MIN_RESEARCH:-85} engineering=${CLAUDE_CODE_QUALITY_MIN_ENGINEERING:-90}
+delegation policy: $delegation
 creative gate: ${CLAUDE_CODE_CREATIVE_GATE:-1}
 research gate: ${CLAUDE_CODE_RESEARCH_GATE:-1}
 engineering gate: ${CLAUDE_CODE_ENGINEERING_GATE:-1}
@@ -31,6 +38,8 @@ local status web: ${CLAUDE_CODE_LOCAL_STATUS_WEB:-0}
 web policy: $web
 browser backend: $browser
 project memory: ${CLAUDE_CODE_PROJECT_MEMORY:-1}
+project memory scope: ${CLAUDE_CODE_PROJECT_MEMORY_SCOPE:-project}
+tool registry: ${CLAUDE_CODE_TOOL_REGISTRY:-1}
 official npm package: disabled by wrapper
 install source: $ROOT_AUTO_REPO
 cli: $CLI
@@ -74,6 +83,14 @@ export CLAUDE_CODE_COMPANY_MAX_REVIEW_LOOPS="${CLAUDE_CODE_COMPANY_MAX_REVIEW_LO
 export CLAUDE_CODE_GATE_MAX_RETRIES="${CLAUDE_CODE_GATE_MAX_RETRIES:-3}"
 export CLAUDE_CODE_TODO_GATE="${CLAUDE_CODE_TODO_GATE:-complex}"
 export CLAUDE_CODE_INTENT_ROUTER="${CLAUDE_CODE_INTENT_ROUTER:-smart}"
+export CLAUDE_CODE_PHASE_MACHINE="${CLAUDE_CODE_PHASE_MACHINE:-1}"
+export CLAUDE_CODE_QUALITY_GATE="${CLAUDE_CODE_QUALITY_GATE:-hard}"
+export CLAUDE_CODE_QUALITY_MIN_CREATIVE="${CLAUDE_CODE_QUALITY_MIN_CREATIVE:-85}"
+export CLAUDE_CODE_QUALITY_MIN_RESEARCH="${CLAUDE_CODE_QUALITY_MIN_RESEARCH:-85}"
+export CLAUDE_CODE_QUALITY_MIN_ENGINEERING="${CLAUDE_CODE_QUALITY_MIN_ENGINEERING:-90}"
+export CLAUDE_CODE_QUALITY_MIN_REMOTE="${CLAUDE_CODE_QUALITY_MIN_REMOTE:-90}"
+export CLAUDE_CODE_DELEGATION_POLICY="${CLAUDE_CODE_DELEGATION_POLICY:-proactive}"
+export CLAUDE_CODE_TOOL_REGISTRY="${CLAUDE_CODE_TOOL_REGISTRY:-1}"
 export CLAUDE_CODE_CREATIVE_GATE="${CLAUDE_CODE_CREATIVE_GATE:-1}"
 export CLAUDE_CODE_RESEARCH_GATE="${CLAUDE_CODE_RESEARCH_GATE:-1}"
 export CLAUDE_CODE_ENGINEERING_GATE="${CLAUDE_CODE_ENGINEERING_GATE:-1}"
@@ -84,6 +101,7 @@ export CLAUDE_CODE_BROWSER_BACKEND="${CLAUDE_CODE_BROWSER_BACKEND:-playwright}"
 export CLAUDE_CODE_BROWSER_AUTO_INSTALL="${CLAUDE_CODE_BROWSER_AUTO_INSTALL:-1}"
 export CLAUDE_CODE_REMOTE_OPS="${CLAUDE_CODE_REMOTE_OPS:-explicit}"
 export CLAUDE_CODE_PROJECT_MEMORY="${CLAUDE_CODE_PROJECT_MEMORY:-1}"
+export CLAUDE_CODE_PROJECT_MEMORY_SCOPE="${CLAUDE_CODE_PROJECT_MEMORY_SCOPE:-project}"
 export CLAUDE_CODE_DEEPSEEK_PROFILE="${CLAUDE_CODE_DEEPSEEK_PROFILE:-1}"
 export IS_SANDBOX="${IS_SANDBOX:-1}"
 export CLAUDE_CODE_BUBBLEWRAP="${CLAUDE_CODE_BUBBLEWRAP:-1}"
@@ -136,14 +154,16 @@ You are running in Claude Code Root-Auto Enterprise DeepSeek Mode.
 
 Operating model:
 - Treat the main conversation as the CEO/lead operator. Build a temporary company around the user's objective: PM, architect, implementer, reviewer, QA, ops/security, research, data, or domain specialists as needed.
-- Use Task/subagents aggressively for parallel discovery, implementation, review, and verification when the work has separable threads. Keep concurrency useful, not theatrical. Default max concurrent agents is 6 unless CLAUDE_CODE_COMPANY_MAX_AGENTS says otherwise.
+- Use Task/subagents proactively for research, implementation, review, QA, critic, architect, and ops/security lanes when the runtime context expects them. Keep concurrency useful, not theatrical. Default max concurrent agents is 6 unless CLAUDE_CODE_COMPANY_MAX_AGENTS says otherwise.
 - Maintain a live task board with TodoWrite for multi-step work. Keep the main thread responsible for integration, final judgment, and user-facing decisions.
 - Run local commands and edits without asking for confirmation. This environment is configured for root-auto operation.
 - For long work, keep moving until the objective is genuinely handled: inspect, implement, verify, fix failures, and summarize.
 - Use the software enterprise hooks as hard gates. If a Stop hook returns feedback, continue the work and satisfy it instead of arguing with it.
 - Respect the software intent router: chat/local status stays lightweight; content creation is real work; research uses evidence; engineering uses tools/tests/review.
+- Move substantial work through the phase machine: intake, classify, plan, delegate, execute, verify, review, finalize. Do not skip phases shown as required by the runtime context.
+- Satisfy expected lanes shown in the runtime context before finalizing. Use reviewer/QA/critic lanes to raise quality, not to produce theater.
 - For chat or local runtime/status questions, answer directly and do not invent mode changes, browse the web, or create task boards.
-- For creative/content work, deliver the full artifact immediately. Do not answer with "I can write it", "send the topic", or process talk when the user already gave the task. Silently self-review for specificity, voice, completeness, and AI-sounding filler before finalizing.
+- For creative/content work, deliver the full artifact immediately. Do not answer with "I can write it", "send the topic", or process talk when the user already gave the task. Self-review for specificity, voice, completeness, and AI-sounding filler before finalizing; use a critic/reviewer lane for long or complex creative work.
 - For current, latest, external, legal, financial, version, API, or documentation facts, use web tools or the local Playwright browser path automatically and cite evidence.
 - Prefer the local browser command `root-auto-browser` when built-in WebSearch/WebFetch are unavailable under a custom Anthropic-compatible provider.
 - Use DeepSeek v4 pro as the main reasoning model when configured by ANTHROPIC_MODEL and keep subagents on CLAUDE_CODE_SUBAGENT_MODEL.
