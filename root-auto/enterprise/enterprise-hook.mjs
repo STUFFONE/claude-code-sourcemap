@@ -261,6 +261,15 @@ function isProgressUpdate(text) {
   return /(等|等待|还在|正在|进行中|未完成|没回来|回来|agent|subagent|调研|处理中|running|waiting|in progress|still running|not done|pending)/i.test(value)
 }
 
+function isStatusOnlyUpdate(text) {
+  const value = String(text || '')
+  if (!value.trim()) return false
+  const saysNotDone = /(没好|还没好|没完成|未完成|还在|正在|等通知|等待|进行中|处理中|still running|not done|not ready|pending|running|in progress)/i.test(value)
+  const aboutWorkStatus = /(agent|subagent|任务|调研|搜索|web\s*search|search|reviewer|qa|instagram|输出|结果|回来|完成|好了)/i.test(value)
+  const falsePositiveFinal = /(^|\s)(完成了|已完成|done|finished)(。|\.|\s|$)/i.test(value) && !/(没完成|未完成|not done)/i.test(value)
+  return saysNotDone && aboutWorkStatus && !falsePositiveFinal
+}
+
 function scoreQuality(current, input) {
   ensureRuntimePlan(current)
   const assistantText = compactAssistantText(lastAssistantText(input))
@@ -438,6 +447,7 @@ function classifyPrompt(prompt) {
     /(现在|当前|目前|此刻|这里).{0,24}(是不是|是否|是)?.{0,24}(ceo|super|企业|enterprise|root-auto|root auto|模式|状态|配置|版本)/i,
     /(你|claude).{0,24}(现在|当前|目前).{0,24}(什么模式|哪种模式|是不是|状态|配置|版本)/i,
     /(ceo|super|企业|enterprise|root-auto|root auto).{0,24}(模式|状态|开了吗|启用了吗|是不是)/i,
+    /(agent|subagent|任务|调研|搜索|reviewer|qa|instagram).{0,30}(好了没|好了吗|回来了吗|完成了吗|到哪了|进度|状态|done|ready|finished)/i,
     /\b(are you|current|runtime|local).{0,40}(mode|status|enterprise|ceo|super|root-auto|version|config)\b/i,
   ])
 
@@ -1024,7 +1034,8 @@ function stopGate(input) {
   const current = state.current
   const violations = []
   const assistantText = compactAssistantText(lastAssistantText(input))
-  if (assistantText && current.workClass !== 'none') completePhase(current, 'execute', 'assistant output')
+  const statusOnlyUpdate = isStatusOnlyUpdate(assistantText)
+  if (assistantText && current.workClass !== 'none' && !statusOnlyUpdate) completePhase(current, 'execute', 'assistant output')
   ensureRuntimePlan(current)
   const waitingLanes = activeLanes(current)
   const progressUpdate = isProgressUpdate(assistantText)
@@ -1117,16 +1128,17 @@ function stopGate(input) {
   }
 
   const awaitingSubagents = waitingLanes.length > 0 && progressUpdate
-  if (awaitingSubagents) {
+  if (awaitingSubagents || statusOnlyUpdate) {
     const softViolations = [...violations]
     appendLedger(input, {
-      event: 'stop_gate_progress',
+      event: statusOnlyUpdate ? 'stop_gate_status_update' : 'stop_gate_progress',
       turn: current.turn,
       data: {
         intent: current.intent,
         workClass: current.workClass,
         phase: current.phase,
         activeLanes: waitingLanes,
+        statusOnlyUpdate,
         quality,
         softViolations,
       },
