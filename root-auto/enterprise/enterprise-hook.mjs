@@ -276,6 +276,28 @@ function isStatusOnlyUpdate(text) {
   return saysNotDone && aboutWorkStatus && !falsePositiveFinal
 }
 
+function isCompletionClaim(text) {
+  const value = String(text || '')
+  if (!value.trim()) return false
+  if (/(没完成|未完成|没好|not done|not ready|still running|pending|in progress)/i.test(value)) return false
+  return /(完成了|已完成|全部完成|写完|已写完|交付|最终|总结|done|finished|complete|completed|pushed|已推送|推送成功|push\s*(已成功|成功|done|completed)|git\s+push.{0,40}(成功|done|completed)|published|deployed|上线|发布成功)/i.test(value)
+}
+
+function isNonFinalUpdate(text) {
+  const value = String(text || '')
+  if (!value.trim()) return false
+  if (isStatusOnlyUpdate(value) || isProgressUpdate(value)) return true
+  const transitional = matchesAny(value, [
+    /(现在|接下来|继续|准备|开始|先|马上|正在|我会|我来).{0,80}(跑|查|搜|写|做|验证|检查|review|qa|test|diff|agent|调研|搜索|整理|修|改|读|看|push|推送)/i,
+    /(跑|查|搜|写|做|验证|检查|review|qa|test|diff|调研|搜索|整理|push|推送).{0,60}(中|ing|进行中|还在)/i,
+    /(等|等待).{0,40}(结果|通知|agent|subagent|回来|完成|输出|response)/i,
+    /(will|going to|about to|next|now).{0,60}(run|check|search|write|review|verify|test|wait|continue)/i,
+  ])
+  if (transitional) return true
+  if (isCompletionClaim(value)) return false
+  return false
+}
+
 function scoreQuality(current, input) {
   ensureRuntimePlan(current)
   const assistantText = compactAssistantText(lastAssistantText(input))
@@ -1060,10 +1082,33 @@ function stopGate(input) {
   const violations = []
   const assistantText = compactAssistantText(lastAssistantText(input))
   const statusOnlyUpdate = isStatusOnlyUpdate(assistantText)
-  if (assistantText && current.workClass !== 'none' && current.intent !== 'remote_ops' && !statusOnlyUpdate) completePhase(current, 'execute', 'assistant output')
   ensureRuntimePlan(current)
   const waitingLanes = activeLanes(current)
   const progressUpdate = isProgressUpdate(assistantText)
+  const nonFinalUpdate = isNonFinalUpdate(assistantText)
+  const finalizationAttempt = isCompletionClaim(assistantText) || !nonFinalUpdate
+  const shouldBypassFinalGate = statusOnlyUpdate || nonFinalUpdate || (waitingLanes.length > 0 && progressUpdate)
+
+  if (shouldBypassFinalGate) {
+    appendLedger(input, {
+      event: statusOnlyUpdate ? 'stop_gate_status_update' : 'stop_gate_non_final_update',
+      turn: current.turn,
+      data: {
+        intent: current.intent,
+        workClass: current.workClass,
+        phase: current.phase,
+        activeLanes: waitingLanes,
+        statusOnlyUpdate,
+        nonFinalUpdate,
+        progressUpdate,
+        finalizationAttempt,
+      },
+    })
+    saveState(input, state)
+    return null
+  }
+
+  if (assistantText && current.workClass !== 'none' && current.intent !== 'remote_ops') completePhase(current, 'execute', 'assistant output')
   const changedCount = current.changedFiles.length
   const gatesActive = []
   const gatesSkipped = []
@@ -1158,26 +1203,6 @@ function stopGate(input) {
   const quality = scoreQuality(current, input)
   if (hardQualityGate && quality.threshold > 0 && quality.finalScore < quality.threshold) {
     violations.push(`Quality score ${quality.finalScore}/${quality.threshold} is below the hard gate. Improve the missing dimensions before finalizing.`)
-  }
-
-  const awaitingSubagents = waitingLanes.length > 0 && progressUpdate
-  if (awaitingSubagents || statusOnlyUpdate) {
-    const softViolations = [...violations]
-    appendLedger(input, {
-      event: statusOnlyUpdate ? 'stop_gate_status_update' : 'stop_gate_progress',
-      turn: current.turn,
-      data: {
-        intent: current.intent,
-        workClass: current.workClass,
-        phase: current.phase,
-        activeLanes: waitingLanes,
-        statusOnlyUpdate,
-        quality,
-        softViolations,
-      },
-    })
-    saveState(input, state)
-    return null
   }
 
   appendLedger(input, {
