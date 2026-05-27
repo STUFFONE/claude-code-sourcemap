@@ -201,6 +201,7 @@ function initializeRuntimePlan(current) {
   current.expectedLanes = requiredLanesFor(current)
   current.completedLanes = []
   current.laneEvents = []
+  current.activeAgents = {}
   current.toolCount = 0
   current.quality = null
 }
@@ -213,6 +214,7 @@ function ensureRuntimePlan(current) {
   current.expectedLanes ||= []
   current.completedLanes ||= []
   current.laneEvents ||= []
+  current.activeAgents ||= {}
   current.toolCount ||= 0
   current.quality ||= null
   for (const phase of ['intake', 'classify']) addUnique(current.completedPhases, phase)
@@ -230,13 +232,33 @@ function completePhase(current, phase, reason) {
 function completeLane(current, lane, reason) {
   ensureRuntimePlan(current)
   addUnique(current.completedLanes, lane)
-  current.laneEvents.push({ lane, ts: new Date().toISOString(), reason: truncate(reason || '', 240) })
+  current.laneEvents.push({ lane, status: 'completed', ts: new Date().toISOString(), reason: truncate(reason || '', 240) })
   completePhase(current, 'delegate', lane)
   if (lane === 'reviewer' || lane === 'qa' || lane === 'ops_security') {
     current.reviewerUsed = true
     completePhase(current, 'review', lane)
   }
   if (lane === 'research') completePhase(current, 'verify', lane)
+}
+
+function activeLanes(current) {
+  const agentLanes = Object.values(current.activeAgents || {})
+    .filter(agent => agent && agent.status !== 'completed')
+    .map(agent => agent.lane)
+  if (agentLanes.length > 0) return unique(agentLanes)
+
+  const latest = new Map()
+  for (const event of current.laneEvents || []) {
+    if (!event?.lane) continue
+    latest.set(event.lane, event.status || 'completed')
+  }
+  return [...latest.entries()].filter(([, status]) => status === 'started').map(([lane]) => lane)
+}
+
+function isProgressUpdate(text) {
+  const value = String(text || '')
+  if (!value.trim()) return false
+  return /(等|等待|还在|正在|进行中|未完成|没回来|回来|agent|subagent|调研|处理中|running|waiting|in progress|still running|not done|pending)/i.test(value)
 }
 
 function scoreQuality(current, input) {
@@ -433,6 +455,7 @@ function classifyPrompt(prompt) {
 
   const codeWriting = matchesAny(text, [
     /写(代码|测试|单测|函数|组件|页面|接口|api|API|命令|配置|插件|脚本|程序|文件|模块|类|hook|Hook)/,
+    /(写|创建|生成).{0,16}(skill|skills|技能)/i,
     /(实现|修复|调试|跑|执行|安装|提交|推送|上传|部署|接入|落地|打包|构建|测试|重构|优化|魔改|改内核)/i,
     /(修改|创建|生成).{0,16}(代码|项目|仓库|repo|文件|功能|bug|测试|构建|脚本|依赖|组件|接口|API|配置|hook|客户端)/i,
     /\b(implement|fix|change|edit|run|install|commit|push|deploy|create|build|wire|add|refactor|debug|test|lint|patch)\b/i,
@@ -447,8 +470,8 @@ function classifyPrompt(prompt) {
 
   const research =
     matchesAny(text, [
-      /(查一下|搜索|搜一下|联网|上网|验证一下|核实|引用来源|找资料|资料调研|对比一下|看看官网|官方文档|文档里)/,
-      /\b(search|browse|look up|verify|fact check|research|cite sources|official docs|documentation)\b/i,
+      /(查一下|搜索|搜一下|联网|上网|验证一下|核实|引用来源|找资料|资料调研|调研|对比一下|看看官网|官方文档|文档里)/,
+      /\b(websearch|web search|search|browse|look up|verify|fact check|research|cite sources|official docs|documentation)\b/i,
     ]) &&
     !localStatusQuestion
 
@@ -461,7 +484,7 @@ function classifyPrompt(prompt) {
     !creative &&
     matchesAny(text, [
       /(实现|修复|调试|跑|执行|安装|提交|接入|落地|打包|构建|测试|重构|优化|检查|魔改|改内核|更新).{0,24}(代码|项目|仓库|repo|文件|功能|bug|测试|构建|脚本|依赖|组件|接口|API|配置|hook|客户端|本地|版本|分支)?/i,
-      /(修改|创建|生成).{0,24}(代码|项目|仓库|repo|文件|功能|bug|测试|构建|脚本|依赖|组件|接口|API|配置|hook|客户端|本地|版本|分支)/i,
+      /(修改|创建|生成|写).{0,24}(代码|项目|仓库|repo|文件|功能|bug|测试|构建|脚本|依赖|组件|接口|API|配置|hook|客户端|本地|版本|分支|skill|skills|技能)/i,
       /\b(implement|fix|change|edit|run|install|commit|create|build|wire|add|refactor|debug|test|lint|patch|modify|generate)\b/i,
     ])
 
@@ -486,10 +509,6 @@ function classifyPrompt(prompt) {
     intent = 'creative_work'
     workClass = 'creative'
     reasons.push('content creation request')
-  } else if (research || (externalFacts && !engineering && !explicitRemote)) {
-    intent = 'research_work'
-    workClass = 'research'
-    reasons.push(research ? 'explicit research request' : 'external/current facts request')
   } else if (explicitRemote) {
     intent = 'remote_ops'
     workClass = 'remote'
@@ -498,6 +517,11 @@ function classifyPrompt(prompt) {
     intent = 'engineering_work'
     workClass = 'engineering'
     reasons.push('engineering/tool execution request')
+    if (research || externalFacts) reasons.push('requires web evidence')
+  } else if (research || externalFacts) {
+    intent = 'research_work'
+    workClass = 'research'
+    reasons.push(research ? 'explicit research request' : 'external/current facts request')
   } else if (discussion) {
     intent = 'discussion'
     workClass = 'none'
@@ -603,6 +627,7 @@ function currentState(input) {
       expectedLanes: [],
       completedLanes: [],
       laneEvents: [],
+      activeAgents: {},
       toolCount: 0,
       quality: null,
       todoUsed: false,
@@ -1001,6 +1026,8 @@ function stopGate(input) {
   const assistantText = compactAssistantText(lastAssistantText(input))
   if (assistantText && current.workClass !== 'none') completePhase(current, 'execute', 'assistant output')
   ensureRuntimePlan(current)
+  const waitingLanes = activeLanes(current)
+  const progressUpdate = isProgressUpdate(assistantText)
   const changedCount = current.changedFiles.length
   const gatesActive = []
   const gatesSkipped = []
@@ -1089,6 +1116,33 @@ function stopGate(input) {
     violations.push(`Quality score ${quality.finalScore}/${quality.threshold} is below the hard gate. Improve the missing dimensions before finalizing.`)
   }
 
+  const awaitingSubagents = waitingLanes.length > 0 && progressUpdate
+  if (awaitingSubagents) {
+    const softViolations = [...violations]
+    appendLedger(input, {
+      event: 'stop_gate_progress',
+      turn: current.turn,
+      data: {
+        intent: current.intent,
+        workClass: current.workClass,
+        phase: current.phase,
+        activeLanes: waitingLanes,
+        quality,
+        softViolations,
+      },
+    })
+    saveState(input, state)
+    return {
+      suppressOutput: true,
+      systemMessage: [
+        `Enterprise progress update accepted while waiting for active lane(s): ${waitingLanes.join(', ')}.`,
+        softViolations.length
+          ? `When the lanes finish, satisfy these before finalizing: ${softViolations.join(' | ')}`
+          : 'Continue waiting or integrate lane results when ready.',
+      ].join('\n'),
+    }
+  }
+
   appendLedger(input, {
     event: 'stop_gate',
     turn: current.turn,
@@ -1126,7 +1180,7 @@ function stopGate(input) {
   if (current.gateAttempts >= maxRetries) {
     return {
       suppressOutput: true,
-      systemMessage: `Enterprise gate reached max retries. Final answer must disclose unresolved checks: ${violations.join(' | ')}`,
+      systemMessage: `Enterprise gate reached max retries. Continue working if possible; final answer must disclose unresolved checks only if you are genuinely blocked: ${violations.join(' | ')}`,
     }
   }
 
@@ -1201,11 +1255,13 @@ async function main() {
     case 'SubagentStart': {
       const state = currentState(input)
       const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''}`)
+      const agentId = String(input.agent_id || `${lane}-${Date.now()}`)
       ensureRuntimePlan(state.current)
       completePhase(state.current, 'delegate', `subagent_start:${lane}`)
+      state.current.activeAgents[agentId] = { lane, status: 'started', startedAt: new Date().toISOString(), agent_type: input.agent_type || '' }
       state.current.laneEvents.push({ lane, status: 'started', ts: new Date().toISOString(), reason: 'subagent_start' })
       saveState(input, state)
-      appendLedger(input, { event: 'subagent_start', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane } })
+      appendLedger(input, { event: 'subagent_start', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane, activeAgents: Object.keys(state.current.activeAgents).length } })
       jsonOut({
         suppressOutput: true,
         hookSpecificOutput: {
@@ -1218,9 +1274,14 @@ async function main() {
     case 'SubagentStop': {
       const state = currentState(input)
       const lane = laneFromText(`${input.agent_type || ''} ${input.agent_id || ''} ${input.last_assistant_message || ''}`)
+      const agentId = String(input.agent_id || '')
+      if (agentId && state.current.activeAgents?.[agentId]) {
+        state.current.activeAgents[agentId] = { ...state.current.activeAgents[agentId], status: 'completed', completedAt: new Date().toISOString() }
+        delete state.current.activeAgents[agentId]
+      }
       completeLane(state.current, lane, 'subagent_stop')
       saveState(input, state)
-      appendLedger(input, { event: 'subagent_stop', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane, last: truncate(input.last_assistant_message || '', 1200) } })
+      appendLedger(input, { event: 'subagent_stop', turn: state.current.turn, data: { agent_type: input.agent_type, agent_id: input.agent_id, lane, activeAgents: Object.keys(state.current.activeAgents || {}).length, last: truncate(input.last_assistant_message || '', 1200) } })
       return
     }
     case 'PreCompact': {
