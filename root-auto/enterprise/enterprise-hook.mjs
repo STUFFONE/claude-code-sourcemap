@@ -663,6 +663,47 @@ function isBrowserCommand(command) {
   return /\b(root-auto-browser|playwright|chromium|google-chrome|duckduckgo|curl|wget|lynx|w3m)\b/i.test(command)
 }
 
+function isWebLookupTool(tool, command) {
+  return tool === 'WebSearch' || tool === 'WebFetch' || (tool === 'Bash' && isBrowserCommand(command))
+}
+
+function webLookupText(tool, toolInput, command) {
+  const input = toolInput && typeof toolInput === 'object' ? toolInput : {}
+  if (tool === 'WebSearch') return String(input.query || '')
+  if (tool === 'WebFetch') return `${input.url || ''} ${input.prompt || ''}`
+  if (tool === 'Bash') return String(command || '')
+  return ''
+}
+
+function hasExplicitWebRequest(text) {
+  return /(websearch|web search|web\s*搜索|用\s*web|使用\s*web|联网|上网|搜索|搜一下|查一下|browse|search|look up|research|调研)/i.test(String(text || ''))
+}
+
+function isProbablyLocalStatusLookup(text) {
+  const value = String(text || '')
+  return matchesAny(value, [
+    /(claude|root-auto|root auto|enterprise|ceo|super).{0,50}(mode|status|config|version|模式|状态|配置|版本|开了吗|启用了吗)/i,
+    /(现在|当前|目前|此刻|这里).{0,50}(claude|root-auto|root auto|enterprise|ceo|super|模式|状态|配置|版本)/i,
+    /(你|assistant).{0,50}(现在|当前|目前).{0,50}(什么模式|是不是|状态|配置|版本)/i,
+  ])
+}
+
+function promoteLocalStatusToResearch(current, lookupText) {
+  current.intent = 'research_work'
+  current.workClass = 'research'
+  current.mode = 'research'
+  current.execution = false
+  current.discussion = false
+  current.research = true
+  current.localStatusQuestion = false
+  current.requiresWeb = true
+  current.needsWeb = true
+  current.reasons ||= []
+  addUnique(current.reasons, 'explicit web/external lookup override')
+  completePhase(current, 'classify', `web lookup override: ${truncate(lookupText, 120)}`)
+  ensureRuntimePlan(current)
+}
+
 function isRemoteCommand(command) {
   return /\bgit\s+push\b/i.test(command) ||
     /\bgit\s+tag\b/i.test(command) ||
@@ -828,7 +869,7 @@ function enterpriseContext(input, state) {
     '- Local root-auto actions are allowed; do not ask for yes/no confirmation for local reads, edits, installs, tests, or dev servers.',
     '- Remote side effects are explicit-only: git push, publish, release, cloud/prod changes, secret operations.',
     '- Intent routing: chat/local_status/discussion stay lightweight; creative_work delivers finished content; research_work gathers evidence; engineering_work executes with verification; remote_ops require explicit user intent.',
-    '- For chat or local_status, answer directly from local runtime context. Do not browse, run tools, or create TodoWrite unless the user asks for real work.',
+    '- For chat or local_status, answer directly from local runtime context. Do not browse, run tools, or create TodoWrite unless the user explicitly asks for WebSearch/external research or real work.',
     '- For creative_work, deliver the complete polished artifact now, self-review it for structure, voice, specificity, and AI-sounding filler, and never answer with "I can write" when the user already requested content.',
     '- For research_work or current/latest/external/version/API/docs facts, use web/root-auto-browser evidence and cite sources.',
     '- For engineering_work, move through plan/delegate/execute/verify/review: TodoWrite for broad work, Task lanes for architect/reviewer/QA when expected, diff inspection, and the closest test/check/build after edits.',
@@ -855,28 +896,39 @@ function preToolDecision(input) {
   const current = state.current
   const tool = input.tool_name || ''
   const command = commandText(input)
+  const lookupText = webLookupText(tool, input.tool_input, command)
+
+  if (
+    current.intent === 'local_status' &&
+    !isTruthy(process.env.CLAUDE_CODE_LOCAL_STATUS_WEB ?? '0') &&
+    isWebLookupTool(tool, command)
+  ) {
+    if (hasExplicitWebRequest(current.prompt) || !isProbablyLocalStatusLookup(lookupText)) {
+      promoteLocalStatusToResearch(current, lookupText)
+      saveState(input, state)
+    } else {
+      appendLedger(input, {
+        event: 'pre_tool',
+        turn: current.turn,
+        data: { tool, intent: current.intent, workClass: current.workClass, input: summarizeToolInput(tool, input.tool_input), blocked: 'local_status_web' },
+      })
+      return {
+        decision: 'block',
+        reason: 'Local runtime/status questions must be answered from the local enterprise context; web lookup is disabled for local-status lookups. If the user explicitly asks for WebSearch, start a new research turn or include that instruction in the prompt.',
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'Local status does not need web evidence.',
+        },
+      }
+    }
+  }
 
   appendLedger(input, {
     event: 'pre_tool',
     turn: current.turn,
     data: { tool, intent: current.intent, workClass: current.workClass, input: summarizeToolInput(tool, input.tool_input) },
   })
-
-  if (
-    current.intent === 'local_status' &&
-    !isTruthy(process.env.CLAUDE_CODE_LOCAL_STATUS_WEB ?? '0') &&
-    (tool === 'WebSearch' || tool === 'WebFetch' || (tool === 'Bash' && isBrowserCommand(command)))
-  ) {
-    return {
-      decision: 'block',
-      reason: 'Local runtime/status questions must be answered from the local enterprise context; web lookup is disabled for this intent.',
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: 'Local status does not need web evidence.',
-      },
-    }
-  }
 
   if (tool === 'Bash') {
     if (isDangerousOutOfProject(command, input.cwd || process.cwd())) {
